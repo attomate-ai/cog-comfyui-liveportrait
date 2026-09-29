@@ -64,7 +64,7 @@ class Predictor(BasePredictor):
         ),
         video_frame_load_cap: int = Input(
             description="The maximum number of frames to load from the driving video. Set to 0 to use all frames.",
-            default=128,
+            default=0,
         ),
         video_select_every_n_frames: int = Input(
             description="Select every nth frame from the driving video. Set to 1 to use all frames.",

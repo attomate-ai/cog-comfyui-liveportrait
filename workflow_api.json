@@ -26,7 +26,7 @@
       "force_size": "Disabled",
       "custom_width": 512,
       "custom_height": 512,
-      "frame_load_cap": 32,
+      "frame_load_cap": 0,
       "skip_first_frames": 0,
       "select_every_nth": 1
     },
