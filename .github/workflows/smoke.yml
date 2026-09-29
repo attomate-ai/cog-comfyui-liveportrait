@@ -1,0 +1,250 @@
+# Runs ONE real prediction on Replicate with the committed smoke/ inputs and
+# checks the output with ffprobe. Manual only: each run costs a few cents.
+# The inputs match VidStudio's provider (packages/pipeline/src/providers/
+# portrait/replicate.ts): face_image, driving_video, video_frame_load_cap: 0.
+name: Smoke test on Replicate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Replicate model version id (64 hex characters)"
+        required: true
+        default: "261e9cd38ccf6d65f45960582f8d38597da0a1843a166f43c4d202d86a40987f"
+      model:
+        description: "Replicate model the version must belong to (owner/name)"
+        required: true
+        default: "attomate/liveportrait"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ inputs.version }}
+      MODEL: ${{ inputs.model }}
+      OUT: out
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the inputs
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::version must be 64 hex characters, got: $VERSION"
+            exit 1
+          fi
+          if ! [[ "$MODEL" =~ ^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$ ]]; then
+            echo "::error::model must look like owner/name, got: $MODEL"
+            exit 1
+          fi
+          test -s smoke/portrait.jpg
+          test -s smoke/driving.mp4
+          mkdir -p "$OUT"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          ffprobe -version | head -1
+
+      - name: Probe the driving clip
+        run: |
+          ffprobe -v error -count_packets -select_streams v:0 \
+            -show_entries stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_read_packets,duration \
+            -of json smoke/driving.mp4 | tee "$OUT/driving-probe.json"
+
+      # A GET only: it costs nothing and fails fast on a wrong model/version.
+      - name: Check the version belongs to the model
+        env:
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys, urllib.request, urllib.error
+          url = f"https://api.replicate.com/v1/models/{os.environ['MODEL']}/versions/{os.environ['VERSION']}"
+          req = urllib.request.Request(url, headers={"Authorization": f"Bearer {os.environ['REPLICATE_API_TOKEN']}"})
+          try:
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  v = json.load(r)
+          except urllib.error.HTTPError as e:
+              sys.exit(f"::error::version lookup failed: HTTP {e.code}")
+          print("version", v.get("id"), "created", v.get("created_at"), "cog", v.get("cog_version"))
+          EOF
+
+      # One POST, never retried: a retry could start a second paid prediction.
+      - name: Start the prediction
+        env:
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+          DRIVING_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/smoke/driving.mp4
+        run: |
+          python3 - <<'EOF'
+          import base64, json, os, sys, urllib.request, urllib.error
+          MAX_DATA_URI_BYTES = 256 * 1024
+
+          def media(path, mime, url):
+              data = open(path, "rb").read()
+              if len(data) <= MAX_DATA_URI_BYTES:
+                  print(f"{path}: {len(data)} bytes, sent as a data URI")
+                  return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+              print(f"{path}: {len(data)} bytes, sent as {url}")
+              return url
+
+          raw = f"https://raw.githubusercontent.com/{os.environ['GITHUB_REPOSITORY']}/{os.environ['GITHUB_SHA']}/smoke/portrait.jpg"
+          body = {
+              "version": os.environ["VERSION"],
+              "input": {
+                  "face_image": media("smoke/portrait.jpg", "image/jpeg", raw),
+                  "driving_video": media("smoke/driving.mp4", "video/mp4", os.environ["DRIVING_URL"]),
+                  "video_frame_load_cap": 0,
+              },
+          }
+          req = urllib.request.Request(
+              "https://api.replicate.com/v1/predictions",
+              data=json.dumps(body).encode(),
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {os.environ['REPLICATE_API_TOKEN']}",
+                  "Content-Type": "application/json",
+                  "Cancel-After": "15m",
+              },
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  p = json.load(r)
+          except urllib.error.HTTPError as e:
+              sys.exit(f"::error::POST failed: HTTP {e.code}: {e.read()[:500].decode(errors='replace')}")
+          print("prediction", p["id"], "status", p["status"])
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"PREDICTION_ID={p['id']}\n")
+          EOF
+
+      - name: Wait for the prediction
+        env:
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys, time, urllib.request, urllib.error
+          pid = os.environ["PREDICTION_ID"]
+          url = f"https://api.replicate.com/v1/predictions/{pid}"
+          headers = {"Authorization": f"Bearer {os.environ['REPLICATE_API_TOKEN']}"}
+          deadline = time.time() + 24 * 60
+          last = None
+          while True:
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as r:
+                      p = json.load(r)
+              except urllib.error.HTTPError as e:
+                  if e.code < 500 and e.code != 429:
+                      sys.exit(f"::error::poll failed: HTTP {e.code}")
+                  print("poll error, retrying: HTTP", e.code)
+                  time.sleep(5)
+                  continue
+              except (urllib.error.URLError, TimeoutError) as e:
+                  print("poll error, retrying:", type(e).__name__)
+                  time.sleep(5)
+                  continue
+              if p["status"] != last:
+                  print(time.strftime("%H:%M:%S"), "status", p["status"])
+                  last = p["status"]
+              if p["status"] in ("succeeded", "failed", "canceled"):
+                  break
+              if time.time() > deadline:
+                  sys.exit(f"::error::prediction {pid} still {p['status']} after 24 min")
+              time.sleep(5)
+          json.dump(p, open(os.path.join(os.environ["OUT"], "prediction.json"), "w"), indent=2)
+          EOF
+
+      - name: Report the prediction
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          from datetime import datetime
+          p = json.load(open(os.path.join(os.environ["OUT"], "prediction.json")))
+          def t(k):
+              v = p.get(k)
+              return datetime.fromisoformat(v.replace("Z", "+00:00")) if v else None
+          created, started, completed = t("created_at"), t("started_at"), t("completed_at")
+          metrics = p.get("metrics") or {}
+          lines = [
+              f"id: {p['id']}",
+              f"status: {p['status']}",
+              f"predict_time: {metrics.get('predict_time')}",
+              f"total_time: {metrics.get('total_time')}",
+              f"queue + boot (started - created): {(started - created).total_seconds() if created and started else None}",
+              f"wall (completed - created): {(completed - created).total_seconds() if created and completed else None}",
+              f"error: {p.get('error')}",
+              f"output: {p.get('output')}",
+          ]
+          print("\n".join(lines))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("### Prediction\n\n```\n" + "\n".join(lines) + "\n```\n")
+          logs = p.get("logs") or ""
+          print("--- last model logs ---")
+          print(logs[-4000:])
+          EOF
+
+      - name: Download the output
+        run: |
+          python3 - <<'EOF'
+          import json, os, re, sys, urllib.request
+          from urllib.parse import urlparse
+          p = json.load(open(os.path.join(os.environ["OUT"], "prediction.json")))
+          if p["status"] != "succeeded":
+              sys.exit(f"::error::prediction {p['status']}: {p.get('error')}")
+          out = p.get("output")
+          urls = out if isinstance(out, list) else [out] if out else []
+          url = next((u for u in urls if re.search(r"\.mp4(\?|$)", u, re.I)), urls[0] if urls else None)
+          if not url:
+              sys.exit("::error::no output URL")
+          u = urlparse(url)
+          host = (u.hostname or "").lower()
+          if u.scheme != "https" or u.username or u.password or u.port or not (
+              host == "replicate.delivery" or host.endswith(".replicate.delivery")
+          ):
+              sys.exit(f"::error::output is not on replicate.delivery: {url}")
+          dest = os.path.join(os.environ["OUT"], "output.mp4")
+          with urllib.request.urlopen(url, timeout=120) as r, open(dest, "wb") as f:
+              f.write(r.read())
+          print("downloaded", url, os.path.getsize(dest), "bytes")
+          EOF
+
+      - name: Probe the output
+        run: |
+          ffprobe -v error -count_packets -show_format \
+            -show_entries stream=index,codec_type,codec_name,profile,pix_fmt,width,height,r_frame_rate,avg_frame_rate,nb_frames,nb_read_packets,duration,start_time,bit_rate \
+            -of json "$OUT/output.mp4" | tee "$OUT/probe.json"
+          python3 - <<'EOF'
+          import json, os
+          j = json.load(open(os.path.join(os.environ["OUT"], "probe.json")))
+          v = next(s for s in j["streams"] if s["codec_type"] == "video")
+          d = json.load(open(os.path.join(os.environ["OUT"], "driving-probe.json")))["streams"][0]
+          lines = [
+              f"codec: {v['codec_name']} {v.get('profile')} {v.get('pix_fmt')}",
+              f"resolution: {v['width']}x{v['height']}",
+              f"fps: r={v['r_frame_rate']} avg={v['avg_frame_rate']}",
+              f"frames (packets): {v.get('nb_read_packets')}",
+              f"duration: stream={v.get('duration')} format={j['format'].get('duration')}",
+              f"driving: {d['nb_read_packets']} frames at {d['r_frame_rate']}, {d['duration']} s",
+          ]
+          print("\n".join(lines))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("### Output probe\n\n```\n" + "\n".join(lines) + "\n```\n")
+          EOF
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smoke-${{ github.run_id }}
+          path: out/
+          if-no-files-found: warn
+          retention-days: 14

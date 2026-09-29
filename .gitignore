@@ -15,3 +15,7 @@ manifest.txt
 updated_weights.json
 downloaded_user_models/
 .cog
+
+# Smoke-test inputs (see smoke/README.md)
+!smoke/*.jpg
+!smoke/*.mp4

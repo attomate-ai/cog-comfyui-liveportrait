@@ -48,3 +48,6 @@ ComfyUI/tests-ui
 ComfyUI/notebooks
 ComfyUI/script_examples
 ComfyUI/comfyui_screenshot.png
+
+# Smoke-test inputs, never in the image
+smoke/
