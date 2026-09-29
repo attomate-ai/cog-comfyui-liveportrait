@@ -81,7 +81,7 @@ MediaPipe and a `LivePortraitRetargeting` node feeds the process node.
 it with `cog push`. It **never runs on its own**: not on push, not on pull
 requests. Building needs no GPU, so a normal GitHub runner is enough.
 
-1. On replicate.com, create the model (default `attomate-ai/liveportrait`) and
+1. On replicate.com, create the model (default `attomate/liveportrait`) and
    pick GPU hardware for it.
 2. In this repo's Settings → Secrets and variables → Actions, add a
    **repository secret** named `REPLICATE_API_TOKEN` holding a Replicate token

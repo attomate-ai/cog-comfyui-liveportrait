@@ -8,7 +8,7 @@ on:
       model:
         description: "Replicate model to push to (owner/name). Create it on replicate.com first."
         required: true
-        default: "attomate-ai/liveportrait"
+        default: "attomate/liveportrait"
 
 permissions:
   contents: read
