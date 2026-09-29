@@ -1,13 +1,13 @@
-# An example of how to convert a given API workflow into its own Replicate model
-# Replace predict.py with this file when building your own workflow
+# LivePortrait on ComfyUI with the MediaPipe face cropper (Apache-2.0 models)
+# instead of InsightFace (non-commercial models). See README.md#license.
 
 import os
 import mimetypes
-import json
 import shutil
 from typing import List
 from cog import BasePredictor, Input, Path
 from comfyui import ComfyUI
+from workflow import build_workflow, load_base_workflow
 
 OUTPUT_DIR = "/tmp/outputs"
 INPUT_DIR = "/tmp/inputs"
@@ -16,11 +16,11 @@ ALL_DIRECTORIES = [OUTPUT_DIR, INPUT_DIR, COMFYUI_TEMP_OUTPUT_DIR]
 
 mimetypes.add_type("image/webp", ".webp")
 
-api_json_file = "workflow_api.json"
-
-# Force HF offline
+# Force HF offline. The LivePortrait weights come from weights_to_download
+# below, so the KJ loader never needs to fetch anything itself.
 os.environ["HF_DATASETS_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
 
@@ -30,8 +30,10 @@ class Predictor(BasePredictor):
         self.comfyUI.start_server(OUTPUT_DIR, INPUT_DIR)
         self.comfyUI.handle_weights(
             {},
+            # No InsightFace weights (buffalo_l). The MediaPipe cropper's
+            # models ship inside ComfyUI-LivePortraitKJ (Apache-2.0), and
+            # landmark.onnx is LivePortrait's own (MIT).
             weights_to_download=[
-                "buffalo_l",
                 "appearance_feature_extractor.safetensors",
                 "landmark.onnx",
                 "motion_extractor.safetensors",
@@ -51,32 +53,6 @@ class Predictor(BasePredictor):
         filename: str = "image.png",
     ):
         shutil.copy(input_file, os.path.join(INPUT_DIR, filename))
-
-    def update_workflow(self, workflow, **kwargs):
-        load_video = workflow["8"]["inputs"]
-        load_video["video"] = kwargs["driving_filename"]
-        load_video["frame_load_cap"] = kwargs["frame_load_cap"]
-        load_video["select_every_n_frames"] = kwargs["select_every_n_frames"]
-
-        load_image = workflow["4"]["inputs"]
-        load_image["image"] = kwargs["face_filename"]
-
-        live_portrait = workflow["30"]["inputs"]
-        live_portrait["dsize"] = kwargs["dsize"]
-        live_portrait["scale"] = kwargs["scale"]
-        live_portrait["vx_ratio"] = kwargs["vx_ratio"]
-        live_portrait["vy_ratio"] = kwargs["vy_ratio"]
-        live_portrait["lip_zero"] = kwargs["lip_zero"]
-        live_portrait["eye_retargeting"] = kwargs["eye_retargeting"]
-        live_portrait["eyes_retargeting_multiplier"] = kwargs[
-            "eyes_retargeting_multiplier"
-        ]
-        live_portrait["lip_retargeting"] = kwargs["lip_retargeting"]
-        live_portrait["lip_retargeting_multiplier"] = kwargs[
-            "lip_retargeting_multiplier"
-        ]
-        live_portrait["stitching"] = kwargs["stitching"]
-        live_portrait["relative"] = kwargs["relative"]
 
     def predict(
         self,
@@ -137,11 +113,8 @@ class Predictor(BasePredictor):
         driving_filename = self.filename_with_extension(driving_video, "driving")
         self.handle_input_file(driving_video, driving_filename)
 
-        with open(api_json_file, "r") as file:
-            workflow = json.loads(file.read())
-
-        self.update_workflow(
-            workflow,
+        workflow = build_workflow(
+            load_base_workflow(),
             face_filename=face_filename,
             driving_filename=driving_filename,
             frame_load_cap=video_frame_load_cap,

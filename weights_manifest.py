@@ -123,6 +123,11 @@ class WeightsManifest:
 
     def non_commercial_weights(self):
         return [
+            # InsightFace face models: non-commercial research only.
+            "antelopev2",
+            "buffalo_l",
+            "models/antelopev2",
+            "models/buffalo_l",
             "inswapper_128.onnx",
             "inswapper_128_fp16.onnx",
             "proteus_v02.safetensors",

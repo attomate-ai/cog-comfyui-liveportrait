@@ -5,9 +5,11 @@ build:
     - ffmpeg
   python_version: "3.10.6"
   python_packages:
-    - torch
-    - torchvision
-    - torchaudio
+    # Pinned to the mid-2024 stack the pinned ComfyUI and KJ nodes were
+    # written against (CUDA 12.1 wheels).
+    - torch==2.3.1
+    - torchvision==0.18.1
+    - torchaudio==2.3.1
     - torchsde
     - einops
     - transformers>=4.25.1
@@ -28,9 +30,14 @@ build:
     # https://github.com/replicate/cog/issues/1623
     - albumentations==1.4.3
 
-     # live portrait
+    # live portrait (ComfyUI-LivePortraitKJ requirements.txt)
     - pyyaml
     - rich
+    - pykalman
+    # MediaPipe face cropper. KJ's media_pipe/face_landmark.py imports
+    # MediaPipe internals, so pin a mid-2024 release. KJ caps numpy at 1.26.4.
+    - mediapipe==0.10.14
+    - numpy==1.26.4
 
     # was-node-suite-comfyui
     # https://github.com/WASasquatch/was-node-suite-comfyui/blob/main/requirements.txt
@@ -49,8 +56,8 @@ build:
     - pandas
     - numexpr
 
-    # comfyui-reactor-node
-    - insightface
+    # insightface is deliberately NOT installed: its face models are for
+    # non-commercial research only. The MediaPipe cropper replaces it.
     - onnx
 
     # ComfyUI-Impact-Pack
@@ -68,12 +75,10 @@ build:
     - importlib_metadata
     - opencv-python-headless>=4.0.1.24
     - filelock
-    - numpy
     - einops
     - pyyaml
     - scikit-image
     - python-dateutil
-    - mediapipe
     - svglib
     - fvcore
     - yapf
@@ -94,5 +99,5 @@ build:
     - huggingface_hub
   run:
     - curl -o /usr/local/bin/pget -L "https://github.com/replicate/pget/releases/download/v0.8.1/pget_linux_x86_64" && chmod +x /usr/local/bin/pget
-    - pip install onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+    - pip install onnxruntime-gpu==1.18.1 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
 predict: "predict.py:Predictor"
