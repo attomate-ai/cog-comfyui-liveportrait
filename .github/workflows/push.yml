@@ -1,0 +1,102 @@
+# Builds the cog image and pushes it to Replicate. Manual only: it never runs
+# on push or on pull requests. Run it from Actions → "Push to Replicate".
+name: Push to Replicate
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Replicate model to push to (owner/name). Create it on replicate.com first."
+        required: true
+        default: "attomate-ai/liveportrait"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: push-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      # The CUDA image with torch needs far more disk than the runner has free.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check the model name
+        env:
+          MODEL: ${{ inputs.model }}
+        run: |
+          if ! [[ "$MODEL" =~ ^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$ ]]; then
+            echo "::error::model must look like owner/name, got: $MODEL"
+            exit 1
+          fi
+
+      # cog builds from the working tree, so the custom nodes must be cloned
+      # into ComfyUI/custom_nodes at their pinned commits first.
+      - name: Install custom nodes
+        run: |
+          python scripts/install_custom_nodes.py
+          python - <<'EOF'
+          import json, os, subprocess, sys
+          for node in json.load(open("custom_nodes.json")):
+              path = os.path.join("ComfyUI/custom_nodes", os.path.basename(node["repo"]))
+              head = subprocess.check_output(["git", "-C", path, "rev-parse", "HEAD"], text=True).strip()
+              if not head.startswith(node["commit"]):
+                  sys.exit(f"{path} is at {head}, expected {node['commit']}")
+              print(f"{path} @ {head}")
+          EOF
+
+      - name: Validate the workflow against the pinned nodes
+        run: >-
+          python scripts/validate_workflow.py
+          --kj ComfyUI/custom_nodes/ComfyUI-LivePortraitKJ
+          --vhs ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite
+          --comfy ComfyUI
+
+      - name: Set up cog
+        uses: replicate/setup-cog@07c492acef81d7fb213665ffbfe7408260217ee9 # v2.0.2
+        with:
+          token: ${{ secrets.REPLICATE_API_TOKEN }}
+          cog-version: v0.9.8
+
+      - name: Push
+        env:
+          MODEL: ${{ inputs.model }}
+        run: cog push "r8.im/$MODEL"
+
+      - name: Report the new version
+        env:
+          MODEL: ${{ inputs.model }}
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+        run: |
+          version=$(curl -fsS \
+            -H "Authorization: Bearer $REPLICATE_API_TOKEN" \
+            "https://api.replicate.com/v1/models/$MODEL" | jq -r '.latest_version.id // empty')
+          if [ -z "$version" ]; then
+            echo "::error::Replicate returned no latest_version for $MODEL"
+            exit 1
+          fi
+          {
+            echo "### Pushed r8.im/$MODEL"
+            echo
+            echo "Set REPLICATE_PORTRAIT_VERSION to $version"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Set REPLICATE_PORTRAIT_VERSION to $version"

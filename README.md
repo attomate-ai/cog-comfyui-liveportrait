@@ -75,6 +75,33 @@ inputs to it:
 With eye or lip retargeting on, the driving video is also cropped with
 MediaPipe and a `LivePortraitRetargeting` node feeds the process node.
 
+## Deploying
+
+`.github/workflows/push.yml` ("Push to Replicate") builds the image and pushes
+it with `cog push`. It **never runs on its own**: not on push, not on pull
+requests. Building needs no GPU, so a normal GitHub runner is enough.
+
+1. On replicate.com, create the model (default `attomate-ai/liveportrait`) and
+   pick GPU hardware for it.
+2. In this repo's Settings → Secrets and variables → Actions, add a
+   **repository secret** named `REPLICATE_API_TOKEN` holding a Replicate token
+   of an account that can push to that model.
+3. Actions → "Push to Replicate" → Run workflow (change `model` if needed).
+   It clones the custom nodes at their pinned commits, checks the graph with
+   `scripts/validate_workflow.py`, runs `cog push r8.im/<model>`, then reads
+   the model's latest version from the Replicate API.
+4. The run summary says "Set REPLICATE_PORTRAIT_VERSION to &lt;id&gt;". Put that
+   version id wherever your app reads it.
+
+To push by hand instead:
+
+```bash
+git submodule update --init --recursive
+python scripts/install_custom_nodes.py
+cog login
+cog push r8.im/<owner>/<model>
+```
+
 ## Checking the graph without a GPU
 
 ```bash
